@@ -1,20 +1,19 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.7.1";
+import Mailgun from 'https://esm.sh/mailgun.js@latest'
 import { corsHeaders } from "../_shared/cors.ts";
 
 // Environment variables
 // Importe a biblioteca de envio de e-mail (ex: Mailgun, SendGrid)
 // Para Mailgun:
 // import Mailgun from 'https://esm.sh/mailgun.js@latest';
-// Para SendGrid (usando Fetch API para a REST API):
-// Não é necessário importar uma lib específica, faremos requisição HTTP.
 
 // Configurações do serviço de e-mail (EXEMPLO COM SENDGRID)
 // Você vai armazenar isso como SEGREDOS no Supabase
-const SENDGRID_API_KEY = Deno.env.get("SENDGRID_API_KEY");
+const MAILGUN_API_KEY = Deno.env.get("MAILGUN_API_KEY");
 const FROM_EMAIL = Deno.env.get("FROM_EMAIL");
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY");
+const SERVICE_ROLE_KEY = Deno.env.get("SERVICE_ROLE_KEY");
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -26,7 +25,7 @@ serve(async (req) => {
   }
 
   try {
-    const { name, email, productLink } = await req.json();
+    const { name, email, phone, productLink } = await req.json();
 
     if (!name || !email || !productLink) {
       return new Response(JSON.stringify({ message: "Name, email, and productLink are required." }), {
@@ -45,7 +44,7 @@ serve(async (req) => {
     // Inicializa o cliente Supabase para interagir com o banco de dados
     const supabase = createClient(
       SUPABASE_URL!,
-      SUPABASE_ANON_KEY!,
+      SERVICE_ROLE_KEY!,
       // Para Edge Functions, é mais seguro usar um service_role key, mas aqui usamos anon_key para simplicidade e assumimos RLS adequado.
       // Para produção, considere passar a service_role key como segredo ou usar um serviço auth específico.
       { global: { headers: { Authorization: req.headers.get('Authorization')! } } }
@@ -57,6 +56,7 @@ serve(async (req) => {
       .insert({ 
         name, 
         email, 
+        phone,
         product_link: productLink,
         utm_source,
         utm_medium,
@@ -85,16 +85,16 @@ serve(async (req) => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${SENDGRID_API_KEY}`,
+        "Authorization": `Bearer ${MAILGUN_API_KEY}`,
       },
       body: JSON.stringify({
         personalizations: [{ to: [{ email: email }] }],
         from: { email: FROM_EMAIL },
-        subject: "Your link to the product!",
+        subject: "Ajuda do Céu - Seu link de acesso ao App!",
         content: [
           {
             type: "text/html",
-            value: `<p>Hi ${name},</p><p>Thanks for signing up! Here is the link to the product: <a href="${productLink}">${productLink}</a></p><p>Regards,<br>Your Team</p>`,
+            value: `<p>Olá ${name},</p><p>Muito obrigado por se registrar! Aqui está o link do seu app: <a href="${productLink}">${productLink}</a></p><p>Um abraço,<br>Ajuda do Céu</p>`,
           },
         ],
       }),
