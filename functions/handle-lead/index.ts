@@ -1,23 +1,30 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.7.1";
-import Mailgun from 'https://esm.sh/mailgun.js@latest'
 import { corsHeaders } from "../_shared/cors.ts";
 
-// Environment variables
-// Importe a biblioteca de envio de e-mail (ex: Mailgun, SendGrid)
-// Para Mailgun:
-// import Mailgun from 'https://esm.sh/mailgun.js@latest';
+// EdgeFunction to save a lead to the DB and send an email with the bait link
 
-// Configurações do serviço de e-mail (EXEMPLO COM SENDGRID)
-// Você vai armazenar isso como SEGREDOS no Supabase
+// Mailgun email service and Supabase database access settings
+// This data is stored as SECRETS in Supabase EdgeFunctions
+const CLIENT_KEY = Deno.env.get("CLIENT_KEY");
+
 const MAILGUN_API_KEY = Deno.env.get("MAILGUN_API_KEY");
-const FROM_EMAIL = Deno.env.get("FROM_EMAIL");
+const MAILGUN_DOMAIN = "mail.fengshuiedecoracao.com.br";
+
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-const SERVICE_ROLE_KEY = Deno.env.get("SERVICE_ROLE_KEY");
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
+  }
+
+  const receivedClientKey = req.headers.get("X-Internal-Api-Key");
+  if (receivedClientKey !== CLIENT_KEY) {
+    return new Response("Unauthorized", {
+      status: 401,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 
   if (req.method !== "POST") {
@@ -27,11 +34,16 @@ serve(async (req) => {
   try {
     const { name, email, phone, productLink } = await req.json();
 
-    if (!name || !email || !productLink) {
-      return new Response(JSON.stringify({ message: "Name, email, and productLink are required." }), {
-        status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    if (!name || !email || !phone || !productLink) {
+      return new Response(
+        JSON.stringify({
+          message: "Name, email, phone and productLink are required.",
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
     }
 
     const url = new URL(req.url);
@@ -41,85 +53,89 @@ serve(async (req) => {
     const utm_content = url.searchParams.get("utm_content");
     const utm_term = url.searchParams.get("utm_term");
 
-    // Inicializa o cliente Supabase para interagir com o banco de dados
-    const supabase = createClient(
-      SUPABASE_URL!,
-      SERVICE_ROLE_KEY!,
-      // Para Edge Functions, é mais seguro usar um service_role key, mas aqui usamos anon_key para simplicidade e assumimos RLS adequado.
-      // Para produção, considere passar a service_role key como segredo ou usar um serviço auth específico.
-      { global: { headers: { Authorization: req.headers.get('Authorization')! } } }
-    );
+    // Initialize Supabase client to interact with the database
+    const supabase = createClient(SUPABASE_URL!, SUPABASE_SERVICE_ROLE_KEY!);
 
-    // 1. Salvar no banco de dados Supabase
+    // 1. Save to Supabase database
     const { data, error: dbError } = await supabase
       .from("leads")
-      .insert({ 
-        name, 
-        email, 
+      .insert({
+        first_name: name,
+        email,
         phone,
         product_link: productLink,
         utm_source,
         utm_medium,
         utm_campaign,
         utm_content,
-        utm_term
+        utm_term,
       })
       .select();
 
     if (dbError) {
       console.error("Error saving lead to database:", dbError);
-      // Se for um erro de duplicidade de e-mail (ex: UNIQUE constraint), você pode dar um feedback específico.
-      if (dbError.code === '23505') { // Código para "unique_violation"
-        return new Response(JSON.stringify({ message: "This email is already registered." }), {
-          status: 409, 
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+      if (dbError.code === "23505") {
+        // Code for "unique_violation"
+        return new Response(
+          JSON.stringify({ message: "This email is already registered." }),
+          {
+            status: 409,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          }
+        );
       }
       throw dbError;
     }
 
     console.log("Lead saved to Supabase:", data);
 
-    // 2. Enviar e-mail usando SendGrid API (exemplo)
-    const sendgridResponse = await fetch("https://api.sendgrid.com/v3/mail/send", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${MAILGUN_API_KEY}`,
-      },
-      body: JSON.stringify({
-        personalizations: [{ to: [{ email: email }] }],
-        from: { email: FROM_EMAIL },
-        subject: "Ajuda do Céu - Seu link de acesso ao App!",
-        content: [
-          {
-            type: "text/html",
-            value: `<p>Olá ${name},</p><p>Muito obrigado por se registrar! Aqui está o link do seu app: <a href="${productLink}">${productLink}</a></p><p>Um abraço,<br>Ajuda do Céu</p>`,
-          },
-        ],
-      }),
-    });
+    // 2. Send email using Mailgun API with fetch
+    const body = new URLSearchParams();
+    body.append("from", `Ajuda do Céu <postmaster@${MAILGUN_DOMAIN}>`);
+    body.append("to", `${name} <${email}>`);
+    body.append("subject", "Ajuda do Céu - Seu link de acesso ao App!");
+    body.append(
+      "html",
+      `<p>Olá ${name},</p><p>Muito obrigado por se registrar! Aqui está o link do seu app: <a href="${productLink}">${productLink}</a></p><p>Um abraço,<br>Ajuda do Céu</p>`
+    );
 
-    if (!sendgridResponse.ok) {
-      const errorData = await sendgridResponse.json();
-      console.error("Error sending email via SendGrid:", errorData);
-      // Mesmo que o e-mail falhe, o lead já foi salvo. Você pode decidir como lidar com isso.
-      // Talvez registrar o erro em uma tabela de logs para retentar depois.
-      // Por enquanto, vamos retornar sucesso, já que o dado principal foi salvo.
-      // Ou você pode optar por retornar um erro 500 se o envio de e-mail for crítico.
-      // throw new Error(`Falha ao enviar e-mail: ${JSON.stringify(errorData)}`);
+    try {
+      const response = await fetch(
+        `https://api.mailgun.net/v3/${MAILGUN_DOMAIN}/messages`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: "Basic " + btoa("api:" + MAILGUN_API_KEY),
+          },
+          body,
+        }
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error("Error sending email via Mailgun:", errorData);
+      } else {
+        console.log("Email sent via Mailgun to:", email);
+      }
+    } catch (emailError) {
+      console.error("Error sending email via Mailgun:", emailError);
     }
 
-    return new Response(JSON.stringify({ message: "Subscription successful, email sent!" }), {
-      status: 200,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-
+    return new Response(
+      JSON.stringify({ message: "Subscription successful, email sent!" }),
+      {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
   } catch (error) {
     console.error("Error in Edge Function:", error);
-    return new Response(JSON.stringify({ message: "Internal server error.", error: error.message }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ message: "Internal server error.", error: error.message }),
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
   }
 });
