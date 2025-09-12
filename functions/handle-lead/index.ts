@@ -32,12 +32,12 @@ serve(async (req) => {
   }
 
   try {
-    const { name, email, phone, productLink } = await req.json();
+    const { name, email, phone, productLink, utm_source, utm_medium, utm_campaign, utm_content, utm_term, email_html } = await req.json();
 
-    if (!name || !email || !phone || !productLink) {
+    if (!name || !email || !productLink) {
       return new Response(
         JSON.stringify({
-          message: "Name, email, phone and productLink are required.",
+          message: "Name, email, productLink and email_html are required.",
         }),
         {
           status: 400,
@@ -46,12 +46,12 @@ serve(async (req) => {
       );
     }
 
-    const url = new URL(req.url);
-    const utm_source = url.searchParams.get("utm_source");
-    const utm_medium = url.searchParams.get("utm_medium");
-    const utm_campaign = url.searchParams.get("utm_campaign");
-    const utm_content = url.searchParams.get("utm_content");
-    const utm_term = url.searchParams.get("utm_term");
+    // const url = new URL(req.url);
+    // const utm_source = url.searchParams.get("utm_source");
+    // const utm_medium = url.searchParams.get("utm_medium");
+    // const utm_campaign = url.searchParams.get("utm_campaign");
+    // const utm_content = url.searchParams.get("utm_content");
+    // const utm_term = url.searchParams.get("utm_term");
 
     // Initialize Supabase client to interact with the database
     const supabase = createClient(SUPABASE_URL!, SUPABASE_SERVICE_ROLE_KEY!);
@@ -90,14 +90,18 @@ serve(async (req) => {
     console.log("Lead saved to Supabase:", data);
 
     // 2. Send email using Mailgun API with fetch
-    const body = new URLSearchParams();
-    body.append("from", `Ajuda do Céu <postmaster@${MAILGUN_DOMAIN}>`);
+    const body = new FormData();
+    // const body = new URLSearchParams();
+    body.append("from", `Ajuda do Céu <contato@fengshuiedecoracao.com.br>`);
     body.append("to", `${name} <${email}>`);
-    body.append("subject", "Ajuda do Céu - Seu link de acesso ao App!");
-    body.append(
-      "html",
-      `<p>Olá ${name},</p><p>Muito obrigado por se registrar! Aqui está o link do seu app: <a href="${productLink}">${productLink}</a></p><p>Um abraço,<br>Ajuda do Céu</p>`
-    );
+    body.append("subject", `${name}, seu link de acesso ao app Ajuda do Céu chegou!`);
+    body.append("html", email_html)
+    // body.append(
+    //   "html",
+    //   `<p>Olá ${name},</p><p>Muito obrigado por se registrar! Aqui está o link de acesso do seu app: <a href="${productLink}">${productLink}</a></p>
+    //   <p>Um abraço,<br>Equipe Ajuda do Céu</p>
+    //   <p>Enviado para: ${email}`
+    // );
 
     try {
       const response = await fetch(
