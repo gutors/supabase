@@ -158,7 +158,39 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // ── 6. Get all push subscriptions ──────────────────────────────
+    // ── 6. Query Mercúrio retrograde for today ─────────────────────
+    const { data: mercuryRetrograde, error: mercuryError } = await supabase
+      .from("planetary_retrogrades")
+      .select("*")
+      .eq("planet", "Mercúrio")
+      .lte("start_date", today)
+      .gte("end_date", today);
+
+    if (mercuryError) throw mercuryError;
+
+    let mercuryMessage = "";
+    if (mercuryRetrograde && mercuryRetrograde.length > 0) {
+      const r = mercuryRetrograde[0];
+      const endDateFormatted = new Date(r.end_date + "T00:00:00").toLocaleDateString("pt-BR", {
+        day: "2-digit",
+        month: "2-digit",
+      });
+      mercuryMessage = `⚠️ Mercúrio retrógrado até ${endDateFormatted}`;
+    }
+    log.push(`Mercury retrograde active: ${mercuryMessage.length > 0}`);
+
+    // ── 7. Determine if we should send a notification ──────────────
+    const hasLFC = notificationReasons.length > 0;
+    const hasMercury = mercuryMessage.length > 0;
+
+    if (!hasLFC && !hasMercury) {
+      return new Response(
+        JSON.stringify({ message: "No notifications to send", log }),
+        { headers: { "Content-Type": "application/json" }, status: 200 },
+      );
+    }
+
+    // ── 8. Get all push subscriptions ──────────────────────────────
     const { data: subscriptions, error: subError } = await supabase
       .from("push_subscriptions")
       .select("subscription");
@@ -166,15 +198,19 @@ Deno.serve(async (req: Request) => {
     if (subError) throw subError;
     log.push(`Subscriptions found: ${subscriptions?.length || 0}`);
 
-    // ── 7. Prepare notification payload ────────────────────────────
+    // ── 9. Prepare notification payload ────────────────────────────
     let title = "";
     let body = "";
 
-    if (notificationReasons.length > 0) {
+    if (hasLFC && hasMercury) {
+      title = "🌙⚠️ Atenção: Lua Fora de Curso + Mercúrio Retrógrado!";
+      body = [...notificationReasons, mercuryMessage].join(". ");
+    } else if (hasLFC) {
       title = "🌙 Atenção: Lua Fora de Curso!";
       body = notificationReasons.join(". ");
     } else {
-      body = "✨ Dia favorável para decisões, sem lua fora de curso.";
+      title = "⚠️ Atenção: Mercúrio Retrógrado!";
+      body = mercuryMessage;
     }
 
     const notificationPayload = JSON.stringify({
@@ -184,7 +220,7 @@ Deno.serve(async (req: Request) => {
     });
     log.push(`Notification payload: ${notificationPayload}`);
 
-    // ── 8. Send push notifications to all subscribers ──────────────
+    // ── 10. Send push notifications to all subscribers ─────────────
     log.push(`Sending to ${subscriptions.length} subscribers...`);
 
     const promises = subscriptions.map(async (s: Record<string, unknown>) => {
