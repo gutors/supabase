@@ -1,117 +1,235 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.7.1";
-import { create, getNumericDate } from "https://deno.land/x/djwt@v3.0.2/mod.ts";
-import { encrypt, importKey } from "https://deno.land/x/vapid@v0.2.2/mod.ts";
+import { createClient } from "@supabase/supabase-js";
+import webpush from "web-push";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey",
 };
 
-// Helper para converter a chave VAPID de base64url para um formato que a API de criptografia entende
-function urlBase64ToUint8Array(base64String: string) {
-  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/\-/g, "+").replace(/_/g, "/");
-  const rawData = atob(base64);
-  const outputArray = new Uint8Array(rawData.length);
-  for (let i = 0; i < rawData.length; ++i) {
-    outputArray[i] = rawData.charCodeAt(i);
-  }
-  return outputArray;
+/**
+ * Get the current date/time string in America/Maceio timezone (UTC-3).
+ * Supabase Edge Functions run in UTC, but our data is in BRT.
+ */
+function getBRTNow(): { date: string; hours: number; minutes: number } {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Maceio",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const parts = formatter.formatToParts(new Date());
+  const year = parts.find((p) => p.type === "year")?.value;
+  const month = parts.find((p) => p.type === "month")?.value;
+  const day = parts.find((p) => p.type === "day")?.value;
+  const date = `${year}-${month}-${day}`;
+
+  const timeFormatter = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "America/Maceio",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const timeParts = timeFormatter.formatToParts(new Date());
+  const hours = parseInt(timeParts.find((p) => p.type === "hour")?.value ?? "0", 10);
+  const minutes = parseInt(timeParts.find((p) => p.type === "minute")?.value ?? "0", 10);
+
+  return { date, hours, minutes };
 }
 
-Deno.serve(async (req) => {
+Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
 
+  const log: string[] = [];
+
   try {
+    // ── 1. Get VAPID keys ──────────────────────────────────────────
     const vapidPublicKey = Deno.env.get("VAPID_PUBLIC_KEY");
     const vapidPrivateKey = Deno.env.get("VAPID_PRIVATE_KEY");
 
     if (!vapidPublicKey || !vapidPrivateKey) {
       throw new Error("VAPID keys are not configured.");
     }
+    log.push("VAPID keys loaded");
 
-    const privateKey = await importKey(vapidPrivateKey);
+    // Configure web-push with VAPID details
+    webpush.setVapidDetails(
+      "mailto:admin@applua.fengshuitradicional.world",
+      vapidPublicKey,
+      vapidPrivateKey,
+    );
+    log.push("web-push configured with VAPID keys");
 
+    // ── 2. Connect to Supabase ──────────────────────────────────────
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-    const supabase = createClient(supabaseUrl!, serviceRoleKey!);
 
-    const { data: subscriptions, error } = await supabase
+    if (!supabaseUrl || !serviceRoleKey) {
+      throw new Error("SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is not configured.");
+    }
+    log.push(`Connecting to Supabase at: ${supabaseUrl}`);
+
+    const supabase = createClient(supabaseUrl, serviceRoleKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
+      global: {
+        headers: {
+          Authorization: `Bearer ${serviceRoleKey}`,
+          apikey: serviceRoleKey,
+        },
+      },
+    });
+    log.push("Supabase client created with service role key");
+
+    // ── 3. Get today's date and current time in BRT ────────────────
+    const brt = getBRTNow();
+    const today = brt.date;
+    const currentTimeMinutes = brt.hours * 60 + brt.minutes;
+    log.push(`Today (BRT): ${today} at ${String(brt.hours).padStart(2, "0")}:${String(brt.minutes).padStart(2, "0")}`);
+
+    // ── 4. Query moon_void_of_course for today ─────────────────────
+    const { data: lfcPeriods, error: lfcError } = await supabase
+      .from("moon_void_of_course")
+      .select("*")
+      .lte("start_date", today)
+      .gte("end_date", today);
+
+    if (lfcError) throw lfcError;
+    log.push(`LFC periods found for today: ${lfcPeriods?.length || 0}`);
+
+    // ── 5. Build notification messages for each LFC period ────────
+    const notificationReasons: string[] = [];
+
+    if (lfcPeriods && lfcPeriods.length > 0) {
+      for (const period of lfcPeriods) {
+        const startParts = (period.start_time as string).split(":").map(Number);
+        const endParts = (period.end_time as string).split(":").map(Number);
+        const startMinutes = startParts[0] * 60 + startParts[1];
+        const endMinutes = endParts[0] * 60 + endParts[1];
+
+        const isCrossMidnight = period.start_date !== period.end_date;
+        const todayIsStartDate = period.start_date === today;
+        const todayIsEndDate = period.end_date === today;
+        const startTimeStr = (period.start_time as string).slice(0, 5);
+        const endTimeStr = (period.end_time as string).slice(0, 5);
+
+        if (!isCrossMidnight) {
+          // ── SAME DAY period ──
+          const isInside = currentTimeMinutes >= startMinutes && currentTimeMinutes <= endMinutes;
+
+          if (isInside) {
+            notificationReasons.push(
+              `Lua Fora de Curso das ${startTimeStr} às ${endTimeStr}`,
+            );
+          } else {
+            notificationReasons.push(
+              `Lua Fora de Curso das ${startTimeStr} às ${endTimeStr}`,
+            );
+          }
+        } else {
+          // ── CROSS-MIDNIGHT period ──
+          // Period spans two days: [start_date startTime] → [end_date endTime]
+
+          // We're on the start date
+          if (todayIsStartDate) {
+            notificationReasons.push(
+              `Lua Fora de Curso das ${startTimeStr} até amanhã às ${endTimeStr}`,
+            );
+          } else if (todayIsEndDate) {
+            // We're on the end date — it started yesterday
+            if (currentTimeMinutes <= endMinutes) {
+              // Still going (before end_time today)
+              notificationReasons.push(
+                `Lua Fora de Curso desde ontem (horário ${startTimeStr}) até hoje às ${endTimeStr}`,
+              );
+            }
+            // After end_time → already finished, don't notify
+          } else {
+            // Today is between start_date and end_date (multi-day period spanning 3+ days)
+            // Still active — notify with full context
+            notificationReasons.push(
+              `Lua Fora de Curso ativa (iniciada dia ${period.start_date} às ${startTimeStr}, termina dia ${period.end_date} às ${endTimeStr})`,
+            );
+          }
+        }
+      }
+    }
+
+    // ── 6. Get all push subscriptions ──────────────────────────────
+    const { data: subscriptions, error: subError } = await supabase
       .from("push_subscriptions")
       .select("subscription");
 
-    if (error) throw error;
+    if (subError) throw subError;
+    log.push(`Subscriptions found: ${subscriptions?.length || 0}`);
 
-    console.log(`Found ${subscriptions.length} subscriptions.`);
+    // ── 7. Prepare notification payload ────────────────────────────
+    let title = "";
+    let body = "";
 
-    const response = await fetch(
-      "https://applua.fengshuiedecoracao.com.br/dados_diarios_completos.json",
-    );
-    const astrologicalData = await response.json();
-    const today = new Date().toISOString().slice(0, 10);
-    const todayData = astrologicalData[today];
-
-    if (todayData && todayData.lfc && todayData.lfc.length > 0) {
-      const notificationPayload = JSON.stringify({
-        title: "Lua Fora de Curso!",
-        body: `Hoje a lua está fora de curso nos seguintes horários: ${
-          todayData.lfc.map((p) => `${p.inicio} às ${p.fim}`).join(", ")
-        }`,
-        icon: "https://applua.fengshuiedecoracao.com.br/favicon.png",
-      });
-
-      console.log("Sending notifications...");
-
-      const promises = subscriptions.map(async (s) => {
-        const subscription = s.subscription as PushSubscription;
-        const audience = new URL(subscription.endpoint).origin;
-
-        // 1. Criar o VAPID JWT
-        const jwt = await create(
-          { alg: "ES256", typ: "JWT" },
-          {
-            aud: audience,
-            exp: getNumericDate(12 * 60 * 60), // 12 hours from now
-            sub: "mailto:admin@applua.fengshuiedecoracao.com.br",
-          },
-          privateKey,
-        );
-
-        // 2. Criptografar o payload
-        const encrypted = await encrypt(
-          subscription,
-          notificationPayload,
-          vapidPublicKey,
-        );
-
-        // 3. Enviar a requisição HTTP POST
-        return fetch(subscription.endpoint, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/octet-stream",
-            "Content-Encoding": encrypted.contentEncoding,
-            "Content-Length": encrypted.body.byteLength.toString(),
-            "Authorization": `vapid t=${jwt}, k=${vapidPublicKey}`,
-          },
-          body: encrypted.body,
-        }).catch(err => console.error(`Failed to send to ${audience}:`, err.message));
-      });
-
-      await Promise.all(promises);
+    if (notificationReasons.length > 0) {
+      title = "🌙 Atenção: Lua Fora de Curso!";
+      body = notificationReasons.join(". ");
+    } else {
+      body = "✨ Dia favorável para decisões, sem lua fora de curso.";
     }
 
-    console.log("Finished sending notifications.");
+    const notificationPayload = JSON.stringify({
+      title,
+      body,
+      icon: "https://applua.fengshuitradicional.world/favicon.png",
+    });
+    log.push(`Notification payload: ${notificationPayload}`);
+
+    // ── 8. Send push notifications to all subscribers ──────────────
+    log.push(`Sending to ${subscriptions.length} subscribers...`);
+
+    const promises = subscriptions.map(async (s: Record<string, unknown>) => {
+      const subscription = s.subscription as {
+        endpoint: string;
+        keys: { p256dh: string; auth: string };
+      };
+      const audience = new URL(subscription.endpoint).origin;
+
+      try {
+        await webpush.sendNotification(
+          subscription as unknown as webpush.PushSubscription,
+          notificationPayload,
+        );
+        log.push(`Sent to ${audience}: OK`);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // 410 Gone or 404 Not Found means subscription is invalid
+        if (msg.includes("410") || msg.includes("404") || msg.includes("gone") || msg.includes("not found")) {
+          await supabase
+            .from("push_subscriptions")
+            .delete()
+            .filter("subscription->>endpoint", "eq", subscription.endpoint);
+          log.push(`Removed invalid subscription: ${audience}`);
+        } else {
+          log.push(`Failed to send to ${audience}: ${msg}`);
+        }
+      }
+    });
+
+    await Promise.all(promises);
+    log.push("Finished sending all notifications");
 
     return new Response(
-      JSON.stringify({ message: `Notification process finished.` }),
+      JSON.stringify({
+        message: `Sent ${notificationReasons.length} notification(s) to ${subscriptions.length} subscriber(s)`,
+        log,
+      }),
       { headers: { "Content-Type": "application/json" }, status: 200 },
     );
-  } catch (error) {
-    return new Response(JSON.stringify({ error: error.message }), {
-      headers: { "Content-Type": "application/json" },
-      status: 500,
-    });
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    return new Response(
+      JSON.stringify({ error: msg, log }),
+      { headers: { "Content-Type": "application/json" }, status: 500 },
+    );
   }
 });
