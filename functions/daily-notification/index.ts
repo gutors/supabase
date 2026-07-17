@@ -208,9 +208,11 @@ Deno.serve(async (req: Request) => {
     } else if (hasLFC) {
       title = "🌙 Atenção: Lua Fora de Curso!";
       body = notificationReasons.join(". ");
-    } else {
+    } else if (hasMercury) {
       title = "⚠️ Atenção: Mercúrio Retrógrado!";
       body = mercuryMessage;
+    } else {
+      body = "🌙 Dia favorável para decisões, sem lua fora de curso.";
     }
 
     const notificationPayload = JSON.stringify({
