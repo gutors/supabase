@@ -212,7 +212,8 @@ Deno.serve(async (req: Request) => {
       title = "⚠️ Atenção: Mercúrio Retrógrado!";
       body = mercuryMessage;
     } else {
-      body = "🌙 Dia favorável para decisões, sem lua fora de curso.";
+      title = "🌙 Dia favorável para decisões!";
+      body = "Dia sem lua fora de curso.";
     }
 
     const notificationPayload = JSON.stringify({
