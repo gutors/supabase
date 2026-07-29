@@ -183,12 +183,12 @@ Deno.serve(async (req: Request) => {
     const hasLFC = notificationReasons.length > 0;
     const hasMercury = mercuryMessage.length > 0;
 
-    if (!hasLFC && !hasMercury) {
-      return new Response(
-        JSON.stringify({ message: "No notifications to send", log }),
-        { headers: { "Content-Type": "application/json" }, status: 200 },
-      );
-    }
+    // if (!hasLFC && !hasMercury) {
+    //   return new Response(
+    //     JSON.stringify({ message: "No notifications to send", log }),
+    //     { headers: { "Content-Type": "application/json" }, status: 200 },
+    //   );
+    // }
 
     // ── 8. Get all push subscriptions ──────────────────────────────
     const { data: subscriptions, error: subError } = await supabase
