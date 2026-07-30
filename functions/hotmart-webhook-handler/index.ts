@@ -38,7 +38,7 @@ Deno.serve(async (req) => {
       buyerEmail,
       { 
         data: { name: buyerName, full_name: buyerName },
-        redirectTo: 'https://applua.fengshuiedecoracao.com.br/set-password' 
+        redirectTo: 'https://applua.fengshuitradicional.world/definir-senha' 
       }
     );
 
